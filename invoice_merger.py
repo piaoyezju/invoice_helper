@@ -6,6 +6,7 @@
 
 import fitz  # PyMuPDF
 from PIL import Image
+import io
 import os
 import sys
 import tempfile
@@ -181,7 +182,7 @@ def render_preview(files, dpi=150):
 
 
 def print_direct(files, printer_name=None):
-    """合并文件并直接打印到打印机。"""
+    """合并文件并直接调用系统打印，不打开任何应用程序。"""
     doc = build_merged_doc(files)
     tmp = tempfile.NamedTemporaryFile(suffix='.pdf', delete=False)
     tmp_path = tmp.name
@@ -190,21 +191,67 @@ def print_direct(files, printer_name=None):
     doc.close()
 
     try:
-        os.startfile(tmp_path, 'print')
-    except Exception as e:
-        os.unlink(tmp_path)
-        raise e
+        if sys.platform == 'win32':
+            _print_windows(tmp_path, printer_name)
+        else:
+            _print_unix(tmp_path, printer_name)
+    finally:
+        import threading
+        def cleanup():
+            import time
+            time.sleep(10)
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
+        threading.Thread(target=cleanup, daemon=True).start()
 
-    import threading
-    def cleanup():
-        import time
-        time.sleep(10)
-        try:
-            os.unlink(tmp_path)
-        except:
-            pass
-    threading.Thread(target=cleanup, daemon=True).start()
-    return tmp_path
+
+def _print_windows(pdf_path, printer_name=None):
+    """Windows: 直接调用打印机，不打开应用。"""
+    import win32print
+    import win32ui
+    import win32con
+    from PIL import ImageWin, Image
+
+    doc = fitz.open(pdf_path)
+    images = []
+    zoom = 300 / 72
+    mat = fitz.Matrix(zoom, zoom)
+    for page in doc:
+        pix = page.get_pixmap(matrix=mat)
+        img = Image.open(io.BytesIO(pix.tobytes("png")))
+        images.append(img)
+    doc.close()
+
+    printer = printer_name or win32print.GetDefaultPrinter()
+    hprinter = win32print.OpenPrinter(printer)
+    try:
+        hdc = win32ui.CreateDC()
+        hdc.CreatePrinterDC(printer)
+        page_w = hdc.GetDeviceCaps(win32con.PHYSICALWIDTH)
+        page_h = hdc.GetDeviceCaps(win32con.PHYSICALHEIGHT)
+
+        hdc.StartDoc("Invoice")
+        for img in images:
+            hdc.StartPage()
+            dib = ImageWin.Dib(img)
+            dib.draw(hdc.GetHandleOutput(), (0, 0, page_w, page_h))
+            hdc.EndPage()
+        hdc.EndDoc()
+        hdc.DeleteDC()
+    finally:
+        win32print.ClosePrinter(hprinter)
+
+
+def _print_unix(pdf_path, printer_name=None):
+    """macOS/Linux: 用 lp 命令打印。"""
+    import subprocess
+    cmd = ['lp']
+    if printer_name:
+        cmd += ['-d', printer_name]
+    cmd.append(pdf_path)
+    subprocess.run(cmd, check=True)
 
 
 def merge_multiple_pairs(files, output_dir, output_name=None):

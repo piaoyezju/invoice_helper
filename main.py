@@ -204,9 +204,12 @@ class InvoiceApp:
     def do_print(self):
         if not self._check_files():
             return
+        printer = _ask_printer(self.root)
+        if printer is None:
+            return
         try:
-            print_direct(self.files)
-            messagebox.showinfo("提示", "已发送到打印机")
+            print_direct(self.files, printer_name=printer)
+            messagebox.showinfo("提示", f"已发送到: {printer}")
         except Exception as e:
             messagebox.showerror("错误", f"打印失败: {e}")
 
@@ -296,9 +299,12 @@ class PreviewWindow:
         self._show_page()
 
     def do_print(self):
+        printer = _ask_printer(self.win)
+        if printer is None:
+            return
         try:
-            print_direct(self.files)
-            messagebox.showinfo("提示", "已发送到打印机", parent=self.win)
+            print_direct(self.files, printer_name=printer)
+            messagebox.showinfo("提示", f"已发送到: {printer}", parent=self.win)
         except Exception as e:
             messagebox.showerror("错误", f"打印失败: {e}", parent=self.win)
 
@@ -319,15 +325,6 @@ class PreviewWindow:
 
 
 def _icon_path():
-    """获取 icon 路径，兼容 PyInstaller 打包"""
-    if getattr(sys, 'frozen', False):
-        base = sys._MEIPASS
-    else:
-        base = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, 'icon.ico')
-
-
-def _icon_path():
     """获取图标文件路径，兼容 PyInstaller"""
     if getattr(sys, 'frozen', False):
         base = sys._MEIPASS
@@ -335,6 +332,71 @@ def _icon_path():
         base = os.path.dirname(os.path.abspath(__file__))
     png = os.path.join(base, 'icon.png')
     return png if os.path.exists(png) else None
+
+
+def _get_printers():
+    """获取系统打印机列表"""
+    if sys.platform == 'win32':
+        import win32print
+        printers = win32print.EnumPrinters(win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS)
+        return [p[2] for p in printers]
+    else:
+        import subprocess
+        result = subprocess.run(['lpstat', '-a'], capture_output=True, text=True)
+        return [line.split()[0] for line in result.stdout.strip().split('\n') if line]
+
+
+def _ask_printer(parent):
+    """弹出打印机选择对话框，返回选中的打印机名，取消返回 None"""
+    try:
+        printers = _get_printers()
+    except Exception:
+        return None
+
+    if not printers:
+        messagebox.showwarning("提示", "未找到打印机", parent=parent)
+        return None
+
+    if len(printers) == 1:
+        return printers[0]
+
+    # 选择对话框
+    dialog = tk.Toplevel(parent)
+    dialog.title("选择打印机")
+    dialog.geometry("350x280")
+    dialog.resizable(False, False)
+    dialog.transient(parent)
+    dialog.grab_set()
+
+    tk.Label(dialog, text="请选择打印机:", font=("微软雅黑", 10)).pack(padx=15, pady=(15, 5), anchor="w")
+
+    listbox = tk.Listbox(dialog, font=("微软雅黑", 9), height=8)
+    listbox.pack(padx=15, pady=5, fill="both", expand=True)
+    for p in printers:
+        listbox.insert(tk.END, p)
+    listbox.selection_set(0)
+
+    result = [None]
+
+    def on_ok():
+        sel = listbox.curselection()
+        if sel:
+            result[0] = printers[sel[0]]
+        dialog.destroy()
+
+    def on_cancel():
+        dialog.destroy()
+
+    btn_frame = tk.Frame(dialog)
+    btn_frame.pack(pady=10)
+    tk.Button(btn_frame, text="确定", width=10, command=on_ok).pack(side="left", padx=10)
+    tk.Button(btn_frame, text="取消", width=10, command=on_cancel).pack(side="left", padx=10)
+
+    dialog.bind('<Return>', lambda e: on_ok())
+    dialog.bind('<Escape>', lambda e: on_cancel())
+
+    parent.wait_window(dialog)
+    return result[0]
 
 
 def main():
