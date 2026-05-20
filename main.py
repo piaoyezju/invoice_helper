@@ -21,9 +21,10 @@ class InvoiceApp:
     def __init__(self, root):
         self.root = root
         self.root.title("发票合并打印工具")
-        self.root.geometry("620x580")
+        self.root.geometry("620x610")
         self.root.resizable(False, False)
         self.files = []
+        self.auto_crop_var = tk.BooleanVar(value=True)
         self._build_ui()
         self._setup_drop()
 
@@ -73,6 +74,12 @@ class InvoiceApp:
         ]):
             tk.Button(frame_order, text=text, width=8, font=("微软雅黑", 9),
                       command=cmd).grid(row=0, column=col, padx=4)
+
+        # 自动裁剪选项
+        frame_options = tk.Frame(self.root)
+        frame_options.pack(pady=2)
+        tk.Checkbutton(frame_options, text="自动裁剪发票区域（去除截图多余部分）",
+                       variable=self.auto_crop_var, font=("微软雅黑", 9)).pack()
 
         # 预览 + 打印按钮
         frame_action = tk.Frame(self.root)
@@ -196,8 +203,8 @@ class InvoiceApp:
         if not self._check_files():
             return
         try:
-            images = render_preview(self.files, dpi=150)
-            PreviewWindow(self.root, images, self.files)
+            images = render_preview(self.files, dpi=150, auto_crop=self.auto_crop_var.get())
+            PreviewWindow(self.root, images, self.files, auto_crop=self.auto_crop_var.get())
         except Exception as e:
             messagebox.showerror("错误", f"预览失败: {e}")
 
@@ -208,7 +215,7 @@ class InvoiceApp:
         if printer is None:
             return
         try:
-            print_direct(self.files, printer_name=printer)
+            print_direct(self.files, printer_name=printer, auto_crop=self.auto_crop_var.get())
             messagebox.showinfo("提示", f"已发送到: {printer}")
         except Exception as e:
             messagebox.showerror("错误", f"打印失败: {e}")
@@ -217,9 +224,10 @@ class InvoiceApp:
 class PreviewWindow:
     """打印预览窗口"""
 
-    def __init__(self, parent, images, files):
+    def __init__(self, parent, images, files, auto_crop=False):
         self.images = images
         self.files = files
+        self.auto_crop = auto_crop
         self.current = 0
         self.zoom = 0.5
         self.tk_img = None
@@ -303,7 +311,7 @@ class PreviewWindow:
         if printer is None:
             return
         try:
-            print_direct(self.files, printer_name=printer)
+            print_direct(self.files, printer_name=printer, auto_crop=self.auto_crop)
             messagebox.showinfo("提示", f"已发送到: {printer}", parent=self.win)
         except Exception as e:
             messagebox.showerror("错误", f"打印失败: {e}", parent=self.win)
@@ -316,7 +324,7 @@ class PreviewWindow:
         if not path:
             return
         try:
-            doc = build_merged_doc(self.files)
+            doc = build_merged_doc(self.files, auto_crop=self.auto_crop)
             doc.save(path)
             doc.close()
             messagebox.showinfo("提示", f"已保存: {path}", parent=self.win)

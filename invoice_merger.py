@@ -10,6 +10,7 @@ import io
 import os
 import sys
 import tempfile
+from auto_crop import auto_crop_invoice
 
 
 # A4 尺寸 (单位: 点, 1点 = 1/72英寸)
@@ -64,9 +65,22 @@ def img_to_temp_pdf(img_path):
     return tmp_path
 
 
-def add_image_to_page(page, img_path, y_start):
+def add_image_to_page(page, img_path, y_start, auto_crop=False, temp_files=None):
     """将图片添加到页面的上半或下半区域。竖向图片自动旋转90度。"""
-    img = Image.open(img_path)
+    source_path = img_path
+
+    # 自动裁剪发票区域
+    if auto_crop:
+        cropped = auto_crop_invoice(img_path)
+        if cropped is not None:
+            tmp_crop = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+            cropped.save(tmp_crop.name, 'PNG')
+            tmp_crop.close()
+            source_path = tmp_crop.name
+            if temp_files is not None:
+                temp_files.append(source_path)
+
+    img = Image.open(source_path)
     src_w, src_h = img.size
     img.close()
 
@@ -77,7 +91,7 @@ def add_image_to_page(page, img_path, y_start):
     new_w, new_h, x_off, y_off = fit_rect(src_w, src_h, ITEM_WIDTH, ITEM_HEIGHT)
 
     # 用临时PDF方式嵌入，兼容性最好
-    tmp_pdf = img_to_temp_pdf(img_path)
+    tmp_pdf = img_to_temp_pdf(source_path)
     try:
         src_doc = fitz.open(tmp_pdf)
         target = fitz.Rect(
@@ -128,48 +142,56 @@ def draw_cut_line(page):
     page.insert_text(fitz.Point(MARGIN - 2, y + 3), scissor, fontsize=8, color=(0.5, 0.5, 0.5))
 
 
-def build_merged_doc(files):
+def build_merged_doc(files, auto_crop=False):
     """将文件列表两两合并，返回 fitz.Document 对象。"""
     doc = fitz.open()
-    for i in range(0, len(files), 2):
-        page = doc.new_page(width=A4_WIDTH, height=A4_HEIGHT)
-        f1 = files[i]
-        if is_image(f1):
-            add_image_to_page(page, f1, MARGIN)
-        elif is_pdf(f1):
-            src = fitz.open(f1)
-            add_pdf_page_to_page(page, src, 0, MARGIN)
-            src.close()
-
-        if i + 1 < len(files):
-            f2 = files[i + 1]
-            y_bottom = MARGIN + ITEM_HEIGHT + GAP
-            if is_image(f2):
-                add_image_to_page(page, f2, y_bottom)
-            elif is_pdf(f2):
-                src = fitz.open(f2)
-                add_pdf_page_to_page(page, src, 0, y_bottom)
+    temp_files = []
+    try:
+        for i in range(0, len(files), 2):
+            page = doc.new_page(width=A4_WIDTH, height=A4_HEIGHT)
+            f1 = files[i]
+            if is_image(f1):
+                add_image_to_page(page, f1, MARGIN, auto_crop=auto_crop, temp_files=temp_files)
+            elif is_pdf(f1):
+                src = fitz.open(f1)
+                add_pdf_page_to_page(page, src, 0, MARGIN)
                 src.close()
 
-        # 画裁剪线
-        draw_cut_line(page)
+            if i + 1 < len(files):
+                f2 = files[i + 1]
+                y_bottom = MARGIN + ITEM_HEIGHT + GAP
+                if is_image(f2):
+                    add_image_to_page(page, f2, y_bottom, auto_crop=auto_crop, temp_files=temp_files)
+                elif is_pdf(f2):
+                    src = fitz.open(f2)
+                    add_pdf_page_to_page(page, src, 0, y_bottom)
+                    src.close()
+
+            # 画裁剪线
+            draw_cut_line(page)
+    finally:
+        for tf in temp_files:
+            try:
+                os.unlink(tf)
+            except:
+                pass
     return doc
 
 
-def merge_two_files(file1, file2, output_path):
+def merge_two_files(file1, file2, output_path, auto_crop=False):
     """将两个文件合并到一张A4纸上，保存到 output_path"""
-    doc = build_merged_doc([file1, file2])
+    doc = build_merged_doc([file1, file2], auto_crop=auto_crop)
     doc.save(output_path)
     doc.close()
     return output_path
 
 
-def render_preview(files, dpi=150):
+def render_preview(files, dpi=150, auto_crop=False):
     """生成预览图，返回 PIL Image 列表（每页一张图）。"""
     from PIL import Image as PILImage
     import io
 
-    doc = build_merged_doc(files)
+    doc = build_merged_doc(files, auto_crop=auto_crop)
     images = []
     zoom = dpi / 72
     mat = fitz.Matrix(zoom, zoom)
@@ -181,9 +203,9 @@ def render_preview(files, dpi=150):
     return images
 
 
-def print_direct(files, printer_name=None):
+def print_direct(files, printer_name=None, auto_crop=False):
     """合并文件并直接调用系统打印，不打开任何应用程序。"""
-    doc = build_merged_doc(files)
+    doc = build_merged_doc(files, auto_crop=auto_crop)
     tmp = tempfile.NamedTemporaryFile(suffix='.pdf', delete=False)
     tmp_path = tmp.name
     tmp.close()
