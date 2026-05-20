@@ -69,8 +69,8 @@ def add_image_to_page(page, img_path, y_start, auto_crop=False, temp_files=None)
     """将图片添加到页面的上半或下半区域。竖向图片自动旋转90度。"""
     source_path = img_path
 
-    # 自动裁剪发票区域
-    if auto_crop:
+    # 自动裁剪发票区域（仅图片，PDF不裁剪）
+    if auto_crop and img_path.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif')):
         cropped = auto_crop_invoice(img_path)
         if cropped is not None:
             tmp_crop = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
