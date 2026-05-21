@@ -1,7 +1,7 @@
 """
-发票合并工具 - 将2张图片或2份PDF发票合并到一张A4纸上打印
+发票合并工具 - 将图片/PDF发票合并到A4纸上打印
 支持: JPG, PNG, BMP, TIFF, PDF
-布局: A4竖放，上下各放一张横向发票。竖向源文件自动旋转90度。
+布局: 按长宽比排序，大图每页2张，小图每页3张。竖向源文件自动旋转90度。
 """
 
 import fitz  # PyMuPDF
@@ -19,10 +19,6 @@ A4_HEIGHT = 841.89
 MARGIN = 15  # 页边距
 GAP = 10  # 两个发票之间的间距
 
-# 每个发票可用区域 (上半/下半)
-ITEM_WIDTH = A4_WIDTH - 2 * MARGIN
-ITEM_HEIGHT = (A4_HEIGHT - 2 * MARGIN - GAP) / 2
-
 # 支持的图片格式
 IMAGE_EXTS = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp')
 
@@ -33,16 +29,6 @@ def is_image(path):
 
 def is_pdf(path):
     return os.path.splitext(path)[1].lower() == '.pdf'
-
-
-def fit_rect(src_width, src_height, dst_width, dst_height):
-    """计算保持宽高比的缩放尺寸和居中偏移"""
-    ratio = min(dst_width / src_width, dst_height / src_height)
-    new_w = src_width * ratio
-    new_h = src_height * ratio
-    x_offset = (dst_width - new_w) / 2
-    y_offset = (dst_height - new_h) / 2
-    return new_w, new_h, x_offset, y_offset
 
 
 def img_to_temp_pdf(img_path):
@@ -65,12 +51,38 @@ def img_to_temp_pdf(img_path):
     return tmp_path
 
 
-def add_image_to_page(page, img_path, y_start, auto_crop=False, temp_files=None):
-    """将图片添加到页面的上半或下半区域。竖向图片自动旋转90度。"""
+def _get_image_size(path):
+    """获取图片旋转后的尺寸（竖向转横向）。PDF取第一页尺寸。"""
+    if is_pdf(path):
+        try:
+            doc = fitz.open(path)
+            w, h = doc[0].rect.width, doc[0].rect.height
+            doc.close()
+            return (h, w) if h > w else (w, h)
+        except Exception:
+            return (0, 0)
+    try:
+        img = Image.open(path)
+        w, h = img.size
+        img.close()
+        return (h, w) if h > w else (w, h)
+    except Exception:
+        return (0, 0)
+
+
+def _fit_rect(src_w, src_h, dst_w, dst_h):
+    """保持宽高比的缩放，返回 (new_w, new_h, x_off, y_off)"""
+    ratio = min(dst_w / src_w, dst_h / src_h)
+    nw = src_w * ratio
+    nh = src_h * ratio
+    return nw, nh, (dst_w - nw) / 2, (dst_h - nh) / 2
+
+
+def _add_image_to_section(page, img_path, y_start, section_h, auto_crop=False, temp_files=None):
+    """将图片放入指定区域（竖向自动旋转）。"""
     source_path = img_path
 
-    # 自动裁剪发票区域（仅图片，PDF不裁剪）
-    if auto_crop and img_path.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif')):
+    if auto_crop and is_image(img_path):
         cropped = auto_crop_invoice(img_path)
         if cropped is not None:
             tmp_crop = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
@@ -80,95 +92,114 @@ def add_image_to_page(page, img_path, y_start, auto_crop=False, temp_files=None)
             if temp_files is not None:
                 temp_files.append(source_path)
 
-    img = Image.open(source_path)
-    src_w, src_h = img.size
-    img.close()
-
-    rotated = src_h > src_w
-    if rotated:
-        src_w, src_h = src_h, src_w
-
-    new_w, new_h, x_off, y_off = fit_rect(src_w, src_h, ITEM_WIDTH, ITEM_HEIGHT)
-
-    # 用临时PDF方式嵌入，兼容性最好
-    tmp_pdf = img_to_temp_pdf(source_path)
     try:
-        src_doc = fitz.open(tmp_pdf)
-        target = fitz.Rect(
-            MARGIN + x_off,
-            y_start + y_off,
-            MARGIN + x_off + new_w,
-            y_start + y_off + new_h
-        )
-        page.show_pdf_page(target, src_doc, 0)
-        src_doc.close()
-    finally:
+        img = Image.open(source_path)
+        src_w, src_h = img.size
+        img.close()
+
+        if src_h > src_w:
+            src_w, src_h = src_h, src_w
+
+        dst_w = A4_WIDTH - 2 * MARGIN
+        new_w, new_h, x_off, y_off = _fit_rect(src_w, src_h, dst_w, section_h)
+
+        tmp_pdf = img_to_temp_pdf(source_path)
         try:
-            os.unlink(tmp_pdf)
-        except:
-            pass
+            src_doc = fitz.open(tmp_pdf)
+            target = fitz.Rect(MARGIN + x_off, y_start + y_off,
+                               MARGIN + x_off + new_w, y_start + y_off + new_h)
+            page.show_pdf_page(target, src_doc, 0)
+            src_doc.close()
+        finally:
+            try:
+                os.unlink(tmp_pdf)
+            except:
+                pass
+    except Exception:
+        pass
 
 
-def add_pdf_page_to_page(page, src_doc, src_page_num, y_start):
-    """将PDF页面添加到页面的上半或下半区域。竖向页面自动旋转90度。"""
-    src_page = src_doc[src_page_num]
-    src_w = src_page.rect.width
-    src_h = src_page.rect.height
-
-    rotated = src_h > src_w
-    if rotated:
+def _add_pdf_to_section(page, src_doc, src_page_num, y_start, section_h):
+    """将PDF页面放入指定区域（竖向自动旋转）。"""
+    sp = src_doc[src_page_num]
+    src_w, src_h = sp.rect.width, sp.rect.height
+    if src_h > src_w:
         src_w, src_h = src_h, src_w
 
-    new_w, new_h, x_off, y_off = fit_rect(src_w, src_h, ITEM_WIDTH, ITEM_HEIGHT)
+    dst_w = A4_WIDTH - 2 * MARGIN
+    new_w, new_h, x_off, y_off = _fit_rect(src_w, src_h, dst_w, section_h)
 
-    target = fitz.Rect(
-        MARGIN + x_off,
-        y_start + y_off,
-        MARGIN + x_off + new_w,
-        y_start + y_off + new_h
-    )
-    page.show_pdf_page(target, src_doc, src_page_num, rotate=90 if rotated else 0)
+    target = fitz.Rect(MARGIN + x_off, y_start + y_off,
+                       MARGIN + x_off + new_w, y_start + y_off + new_h)
+    page.show_pdf_page(target, src_doc, src_page_num, rotate=90 if sp.rect.height > sp.rect.width else 0)
 
 
-def draw_cut_line(page):
-    """在页面中间画一条虚线裁剪标记"""
-    y = MARGIN + ITEM_HEIGHT + GAP / 2
-    p1 = fitz.Point(MARGIN, y)
-    p2 = fitz.Point(A4_WIDTH - MARGIN, y)
-    page.draw_line(p1, p2, color=(0.5, 0.5, 0.5), width=0.5, dashes="[3 3]")
-
-    # 两端剪刀标记
-    scissor = "✂"
-    page.insert_text(fitz.Point(MARGIN - 2, y + 3), scissor, fontsize=8, color=(0.5, 0.5, 0.5))
+def _draw_cut_lines(page, n):
+    """画裁剪线。n=2: 中间一条线; n=3: 两条线三等分。"""
+    usable = A4_HEIGHT - 2 * MARGIN
+    for idx in range(1, n):
+        y = MARGIN + (usable / n) * idx - GAP / 2
+        p1 = fitz.Point(MARGIN, y)
+        p2 = fitz.Point(A4_WIDTH - MARGIN, y)
+        page.draw_line(p1, p2, color=(0.5, 0.5, 0.5), width=0.5, dashes="[3 3]")
+        scissor = "✂"
+        page.insert_text(fitz.Point(MARGIN - 2, y + 3), scissor, fontsize=8, color=(0.5, 0.5, 0.5))
 
 
 def build_merged_doc(files, auto_crop=False):
-    """将文件列表两两合并，返回 fitz.Document 对象。"""
+    """动态排版：按长宽比排序，大图2拼/小图3拼。"""
+    # 按旋转后高度排序（高的在前）
+    def sort_key(path):
+        w, h = _get_image_size(path)
+        return h
+    sorted_files = sorted(files, key=sort_key, reverse=True)
+
+    usable_h = A4_HEIGHT - 2 * MARGIN
+    usable_w = A4_WIDTH - 2 * MARGIN
+    threshold_h = usable_h / 3  # 超过这个值→2拼，否则→3拼
+
     doc = fitz.open()
     temp_files = []
     try:
-        for i in range(0, len(files), 2):
+        idx = 0
+        while idx < len(sorted_files):
+            f = sorted_files[idx]
+            w, h = _get_image_size(f)
+            # 计算实际渲染高度（缩放到A4宽度后的高度，单位：点）
+            if w > 0 and h > 0:
+                scale = usable_w / w
+                rendered_h = h * scale
+            else:
+                rendered_h = threshold_h + 1
+
+            if rendered_h > threshold_h:
+                count = 2
+                section_h = (usable_h - GAP) / 2
+            else:
+                count = 3
+                section_h = (usable_h - 2 * GAP) / 3
+
             page = doc.new_page(width=A4_WIDTH, height=A4_HEIGHT)
-            f1 = files[i]
-            if is_image(f1):
-                add_image_to_page(page, f1, MARGIN, auto_crop=auto_crop, temp_files=temp_files)
-            elif is_pdf(f1):
-                src = fitz.open(f1)
-                add_pdf_page_to_page(page, src, 0, MARGIN)
-                src.close()
+            y = MARGIN
 
-            if i + 1 < len(files):
-                f2 = files[i + 1]
-                y_bottom = MARGIN + ITEM_HEIGHT + GAP
-                if is_image(f2):
-                    add_image_to_page(page, f2, y_bottom, auto_crop=auto_crop, temp_files=temp_files)
-                elif is_pdf(f2):
-                    src = fitz.open(f2)
-                    add_pdf_page_to_page(page, src, 0, y_bottom)
-                    src.close()
+            for j in range(count):
+                if idx + j >= len(sorted_files):
+                    break
+                fi = sorted_files[idx + j]
+                if is_image(fi):
+                    _add_image_to_section(page, fi, y, section_h,
+                                          auto_crop=auto_crop, temp_files=temp_files)
+                elif is_pdf(fi):
+                    try:
+                        src = fitz.open(fi)
+                        _add_pdf_to_section(page, src, 0, y, section_h)
+                        src.close()
+                    except:
+                        pass
+                y += section_h + GAP
 
-            # 画裁剪线
-            draw_cut_line(page)
+            _draw_cut_lines(page, count)
+            idx += count
     finally:
         for tf in temp_files:
             try:
