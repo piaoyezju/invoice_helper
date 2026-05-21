@@ -115,16 +115,44 @@ def _draw_cut_lines(page, n):
         page.insert_text(fitz.Point(MARGIN - 2, y + 3), scissor, fontsize=8, color=(0.5, 0.5, 0.5))
 
 
+def _get_size(path, effective_path):
+    """获取文件旋转后的宽高。"""
+    try:
+        if is_pdf(path):
+            pdf_doc = fitz.open(path)
+            pw, ph = pdf_doc[0].rect.width, pdf_doc[0].rect.height
+            pdf_doc.close()
+            w, h = (ph, pw) if ph > pw else (pw, ph)
+        else:
+            img = Image.open(effective_path)
+            w, h = img.size
+            img.close()
+            if h > w:
+                w, h = h, w
+    except:
+        w, h = 1, 1
+    return w, h
+
+
+def _sort_by_rendered(items):
+    """按渲染高度降序排序。"""
+    usable_w = A4_WIDTH - 2 * MARGIN
+    for i, (path, eff_path, w, h) in enumerate(items):
+        rendered = (h * usable_w / w) if w > 0 and h > 0 else 0
+        items[i] = (path, eff_path, w, h, rendered)
+    items.sort(key=lambda x: x[4], reverse=True)
+    return items
+
+
 def build_merged_doc(files, auto_crop=False):
-    """动态排版：按抠图后宽高比排序，大图2拼/小图3拼。"""
+    """动态排版：按渲染高度排序，高图2拼，矮图3拼。"""
     usable_h = A4_HEIGHT - 2 * MARGIN
     usable_w = A4_WIDTH - 2 * MARGIN
     threshold_h = usable_h / 3
 
     temp_files = []
-
-    # 预处理：对图片文件抠图，获取最终尺寸
     items = []
+
     for path in files:
         effective_path = path
         if auto_crop and is_image(path):
@@ -137,38 +165,20 @@ def build_merged_doc(files, auto_crop=False):
                 temp_files.append(effective_path)
 
         if is_pdf(path) or is_image(path):
-            try:
-                img = Image.open(effective_path)
-                w, h = img.size
-                img.close()
-                if h > w:
-                    w, h = h, w
-            except:
-                w, h = 0, 0
+            w, h = _get_size(path, effective_path)
             items.append((path, effective_path, w, h))
 
-    # 计算每个文件缩放到A4宽度后的渲染高度
-    for i, (path, eff_path, w, h) in enumerate(items):
-        rendered = (h * usable_w / w) if w > 0 and h > 0 else 0
-        items[i] = (path, eff_path, w, h, rendered)
-
-    # 按渲染高度降序排列（高的在前，高的2拼，矮的3拼）
-    items.sort(key=lambda x: x[4], reverse=True)
+    items = _sort_by_rendered(items)
 
     doc = fitz.open()
     try:
         idx = 0
         while idx < len(items):
-            orig_path, eff_path, w, h, rendered_h = items[idx]
-
-            if rendered_h > threshold_h:
-                count = 2
-                section_h = (usable_h - GAP) / 2
-            else:
-                count = 3
-                section_h = (usable_h - 2 * GAP) / 3
+            _, _, w, h, rendered_h = items[idx]
+            count = 2 if rendered_h > threshold_h else 3
 
             page = doc.new_page(width=A4_WIDTH, height=A4_HEIGHT)
+            section_h = ((usable_h - GAP) / 2) if count == 2 else ((usable_h - 2 * GAP) / 3)
             y = MARGIN
 
             for j in range(count):
