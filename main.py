@@ -234,7 +234,9 @@ class PreviewWindow:
 
         self.win = tk.Toplevel(parent)
         self.win.title("打印预览")
-        self.win.geometry("700x850")
+        x = parent.winfo_x() + 30
+        y = max(0, parent.winfo_y() - 60)
+        self.win.geometry(f"650x930+{x}+{y}")
         self.win.resizable(True, True)
         self._build()
 

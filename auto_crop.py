@@ -98,38 +98,36 @@ def _find_invoice_rect(img, w, h):
 
 
 def _find_qr_code(gray, w, h):
-    """找二维码位置。先用pyzbar，失败则用方差扫描"""
-    # pyzbar
+    """用pyzbar找二维码，多种预处理方式增强检测。没找到返回None。"""
     try:
         from pyzbar.pyzbar import decode
-        codes = decode(Image.fromarray(gray))
-        if codes:
-            qr = codes[0]
-            return (qr.rect.left, qr.rect.top, qr.rect.width, qr.rect.height)
     except ImportError:
-        pass
+        return None
 
-    # 回退: 扫描上半部分左半侧，找方差最大的正方形区域
-    search_h = h // 2
-    search_w = w // 2  # QR通常在左半边
-    best_score = 0
-    best_rect = None
-    for size in range(70, 180, 10):
-        step = max(size // 2, 15)
-        for y in range(0, search_h - size, step):
-            for x in range(0, search_w - size, step):
-                block = gray[y:y + size, x:x + size]
-                if block.shape[0] < size or block.shape[1] < size:
-                    continue
-                v = float(np.var(block))
-                dark_pct = np.mean(block < 128)
-                if v > 3000 and 0.25 < dark_pct < 0.7:
-                    score = v * (1 - abs(dark_pct - 0.5))
-                    if score > best_score:
-                        best_score = score
-                        best_rect = (x, y, size, size)
+    # 1. 原始灰度
+    codes = decode(Image.fromarray(gray))
+    if codes:
+        qr = codes[0]
+        return (qr.rect.left, qr.rect.top, qr.rect.width, qr.rect.height)
 
-    return best_rect
+    # 2. 二值化
+    _, binary = cv2.threshold(gray, 128, 255, cv2.THRESH_BINARY)
+    codes = decode(Image.fromarray(binary))
+    if codes:
+        qr = codes[0]
+        return (qr.rect.left, qr.rect.top, qr.rect.width, qr.rect.height)
+
+    # 3. 放大2倍（小QR码放大后更容易识别）
+    scale = 2
+    scaled = cv2.resize(gray, (w * scale, h * scale), interpolation=cv2.INTER_CUBIC)
+    codes = decode(Image.fromarray(scaled))
+    if codes:
+        qr = codes[0]
+        # 坐标缩回原图
+        return (qr.rect.left // scale, qr.rect.top // scale,
+                qr.rect.width // scale, qr.rect.height // scale)
+
+    return None
 
 
 def _sample_bg_around_qr(gray, qr_rect, w, h):
