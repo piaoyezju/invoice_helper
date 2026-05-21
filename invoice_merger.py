@@ -51,25 +51,6 @@ def img_to_temp_pdf(img_path):
     return tmp_path
 
 
-def _get_image_size(path):
-    """获取图片旋转后的尺寸（竖向转横向）。PDF取第一页尺寸。"""
-    if is_pdf(path):
-        try:
-            doc = fitz.open(path)
-            w, h = doc[0].rect.width, doc[0].rect.height
-            doc.close()
-            return (h, w) if h > w else (w, h)
-        except Exception:
-            return (0, 0)
-    try:
-        img = Image.open(path)
-        w, h = img.size
-        img.close()
-        return (h, w) if h > w else (w, h)
-    except Exception:
-        return (0, 0)
-
-
 def _fit_rect(src_w, src_h, dst_w, dst_h):
     """保持宽高比的缩放，返回 (new_w, new_h, x_off, y_off)"""
     ratio = min(dst_w / src_w, dst_h / src_h)
@@ -78,22 +59,10 @@ def _fit_rect(src_w, src_h, dst_w, dst_h):
     return nw, nh, (dst_w - nw) / 2, (dst_h - nh) / 2
 
 
-def _add_image_to_section(page, img_path, y_start, section_h, auto_crop=False, temp_files=None):
-    """将图片放入指定区域（竖向自动旋转）。"""
-    source_path = img_path
-
-    if auto_crop and is_image(img_path):
-        cropped = auto_crop_invoice(img_path)
-        if cropped is not None:
-            tmp_crop = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
-            cropped.save(tmp_crop.name, 'PNG')
-            tmp_crop.close()
-            source_path = tmp_crop.name
-            if temp_files is not None:
-                temp_files.append(source_path)
-
+def _add_image_to_section(page, img_path, y_start, section_h):
+    """将图片放入指定区域（竖向自动旋转）。img_path 应为已抠图的路径。"""
     try:
-        img = Image.open(source_path)
+        img = Image.open(img_path)
         src_w, src_h = img.size
         img.close()
 
@@ -103,7 +72,7 @@ def _add_image_to_section(page, img_path, y_start, section_h, auto_crop=False, t
         dst_w = A4_WIDTH - 2 * MARGIN
         new_w, new_h, x_off, y_off = _fit_rect(src_w, src_h, dst_w, section_h)
 
-        tmp_pdf = img_to_temp_pdf(source_path)
+        tmp_pdf = img_to_temp_pdf(img_path)
         try:
             src_doc = fitz.open(tmp_pdf)
             target = fitz.Rect(MARGIN + x_off, y_start + y_off,
@@ -147,25 +116,46 @@ def _draw_cut_lines(page, n):
 
 
 def build_merged_doc(files, auto_crop=False):
-    """动态排版：按长宽比排序，大图2拼/小图3拼。"""
-    # 按旋转后高度排序（高的在前）
-    def sort_key(path):
-        w, h = _get_image_size(path)
-        return h
-    sorted_files = sorted(files, key=sort_key, reverse=True)
-
+    """动态排版：按抠图后宽高比排序，大图2拼/小图3拼。"""
     usable_h = A4_HEIGHT - 2 * MARGIN
     usable_w = A4_WIDTH - 2 * MARGIN
-    threshold_h = usable_h / 3  # 超过这个值→2拼，否则→3拼
+    threshold_h = usable_h / 3
+
+    temp_files = []
+
+    # 预处理：对图片文件抠图，获取最终尺寸
+    items = []
+    for path in files:
+        effective_path = path
+        if auto_crop and is_image(path):
+            cropped = auto_crop_invoice(path)
+            if cropped is not None:
+                tmp_crop = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+                cropped.save(tmp_crop.name, 'PNG')
+                tmp_crop.close()
+                effective_path = tmp_crop.name
+                temp_files.append(effective_path)
+
+        if is_pdf(path) or is_image(path):
+            try:
+                img = Image.open(effective_path)
+                w, h = img.size
+                img.close()
+                if h > w:
+                    w, h = h, w
+            except:
+                w, h = 0, 0
+            items.append((path, effective_path, w, h))
+
+    # 按旋转后高度排序（高的在前）
+    items.sort(key=lambda x: x[3], reverse=True)
 
     doc = fitz.open()
-    temp_files = []
     try:
         idx = 0
-        while idx < len(sorted_files):
-            f = sorted_files[idx]
-            w, h = _get_image_size(f)
-            # 计算实际渲染高度（缩放到A4宽度后的高度，单位：点）
+        while idx < len(items):
+            orig_path, eff_path, w, h = items[idx]
+            # 计算渲染高度
             if w > 0 and h > 0:
                 scale = usable_w / w
                 rendered_h = h * scale
@@ -183,15 +173,14 @@ def build_merged_doc(files, auto_crop=False):
             y = MARGIN
 
             for j in range(count):
-                if idx + j >= len(sorted_files):
+                if idx + j >= len(items):
                     break
-                fi = sorted_files[idx + j]
-                if is_image(fi):
-                    _add_image_to_section(page, fi, y, section_h,
-                                          auto_crop=auto_crop, temp_files=temp_files)
-                elif is_pdf(fi):
+                orig_p, eff_p, _, _ = items[idx + j]
+                if is_image(orig_p):
+                    _add_image_to_section(page, eff_p, y, section_h)
+                elif is_pdf(orig_p):
                     try:
-                        src = fitz.open(fi)
+                        src = fitz.open(eff_p)
                         _add_pdf_to_section(page, src, 0, y, section_h)
                         src.close()
                     except:
