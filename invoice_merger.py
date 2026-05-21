@@ -144,16 +144,20 @@ def _sort_by_rendered(items):
     return items
 
 
-def build_merged_doc(files, auto_crop=False):
+def build_merged_doc(files, auto_crop=False, progress_callback=None):
     """动态排版：按渲染高度排序，高图2拼，矮图3拼。"""
     usable_h = A4_HEIGHT - 2 * MARGIN
     usable_w = A4_WIDTH - 2 * MARGIN
     threshold_h = usable_h / 3
 
+    total = len(files)
     temp_files = []
     items = []
 
-    for path in files:
+    for i, path in enumerate(files):
+        if progress_callback:
+            progress_callback(i, total, "正在分析文件...")
+
         effective_path = path
         if auto_crop and is_image(path):
             cropped = auto_crop_invoice(path)
@@ -172,10 +176,15 @@ def build_merged_doc(files, auto_crop=False):
 
     doc = fitz.open()
     try:
+        page_num = 0
+        total_pages = max(1, (len(items) + 1) // 2)  # rough estimate
         idx = 0
         while idx < len(items):
             _, _, w, h, rendered_h = items[idx]
             count = 2 if rendered_h > threshold_h else 3
+
+            if progress_callback:
+                progress_callback(page_num, None, f"正在生成第 {page_num + 1} 页...")
 
             page = doc.new_page(width=A4_WIDTH, height=A4_HEIGHT)
             section_h = ((usable_h - GAP) / 2) if count == 2 else ((usable_h - 2 * GAP) / 3)
@@ -197,6 +206,7 @@ def build_merged_doc(files, auto_crop=False):
                 y += section_h + GAP
 
             _draw_cut_lines(page, count)
+            page_num += 1
             idx += count
     finally:
         for tf in temp_files:
@@ -215,16 +225,19 @@ def merge_two_files(file1, file2, output_path, auto_crop=False):
     return output_path
 
 
-def render_preview(files, dpi=150, auto_crop=False):
+def render_preview(files, dpi=150, auto_crop=False, progress_callback=None):
     """生成预览图，返回 PIL Image 列表（每页一张图）。"""
     from PIL import Image as PILImage
     import io
 
-    doc = build_merged_doc(files, auto_crop=auto_crop)
+    doc = build_merged_doc(files, auto_crop=auto_crop, progress_callback=progress_callback)
     images = []
     zoom = dpi / 72
     mat = fitz.Matrix(zoom, zoom)
-    for page in doc:
+    total = len(doc)
+    for i, page in enumerate(doc):
+        if progress_callback:
+            progress_callback(i, total, f"正在渲染预览 {i + 1}/{total}...")
         pix = page.get_pixmap(matrix=mat)
         img = PILImage.open(io.BytesIO(pix.tobytes("png")))
         images.append(img)
@@ -232,9 +245,9 @@ def render_preview(files, dpi=150, auto_crop=False):
     return images
 
 
-def print_direct(files, printer_name=None, auto_crop=False):
+def print_direct(files, printer_name=None, auto_crop=False, progress_callback=None):
     """合并文件并直接调用系统打印，不打开任何应用程序。"""
-    doc = build_merged_doc(files, auto_crop=auto_crop)
+    doc = build_merged_doc(files, auto_crop=auto_crop, progress_callback=progress_callback)
     tmp = tempfile.NamedTemporaryFile(suffix='.pdf', delete=False)
     tmp_path = tmp.name
     tmp.close()

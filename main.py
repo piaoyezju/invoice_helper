@@ -106,15 +106,21 @@ class InvoiceApp:
 
         added = 0
         skipped = 0
+        dup = 0
+        existing = set(self.files)
         for f in files:
             if not os.path.isfile(f):
                 continue
-            if is_image(f) or is_pdf(f):
-                self.files.append(f)
-                self.listbox.insert(tk.END, os.path.basename(f))
-                added += 1
-            else:
+            if not (is_image(f) or is_pdf(f)):
                 skipped += 1
+                continue
+            if f in existing:
+                dup += 1
+                continue
+            self.files.append(f)
+            existing.add(f)
+            self.listbox.insert(tk.END, os.path.basename(f))
+            added += 1
 
         if added > 0:
             self.drop_label.config(text=f"已添加 {added} 个文件", fg="#4CAF50")
@@ -122,6 +128,8 @@ class InvoiceApp:
                 text="将发票图片或PDF拖到这里\n支持 JPG / PNG / BMP / TIFF / PDF", fg="#888"))
         if skipped > 0:
             messagebox.showwarning("提示", f"跳过 {skipped} 个不支持的文件")
+        if dup > 0:
+            messagebox.showwarning("提示", f"跳过 {dup} 个重复文件")
 
     @staticmethod
     def _parse_dnd_paths(data):
@@ -150,9 +158,17 @@ class InvoiceApp:
             ("PDF文件", "*.pdf"),
         ]
         paths = filedialog.askopenfilenames(title="选择发票文件", filetypes=filetypes)
+        existing = set(self.files)
+        dup = 0
         for p in paths:
+            if p in existing:
+                dup += 1
+                continue
             self.files.append(p)
+            existing.add(p)
             self.listbox.insert(tk.END, os.path.basename(p))
+        if dup > 0:
+            messagebox.showwarning("提示", f"跳过 {dup} 个重复文件")
 
     def remove_selected(self):
         sel = self.listbox.curselection()
@@ -199,14 +215,56 @@ class InvoiceApp:
             return False
         return True
 
+    def _show_processing(self, text="正在处理，请稍候..."):
+        self.root.config(cursor="wait")
+        self._wait_win = tk.Toplevel(self.root)
+        self._wait_win.overrideredirect(True)
+        self._wait_win.attributes("-topmost", True)
+        x = self.root.winfo_x() + self.root.winfo_width() // 2 - 100
+        y = self.root.winfo_y() + self.root.winfo_height() // 2 - 30
+        self._wait_win.geometry(f"+{x}+{y}")
+        self._wait_label = tk.Label(self._wait_win, text=text, font=("微软雅黑", 11),
+                                    bg="#FFFFCC", relief="solid", padx=20, pady=15)
+        self._wait_label.pack()
+        self._wait_win.update()
+
+    def _update_progress(self, text):
+        if hasattr(self, '_wait_label'):
+            self._wait_label.config(text=text)
+            self._wait_win.update()
+
+    def _hide_processing(self):
+        self.root.config(cursor="")
+        if hasattr(self, '_wait_win'):
+            self._wait_win.destroy()
+
     def do_preview(self):
         if not self._check_files():
             return
-        try:
-            images = render_preview(self.files, dpi=150, auto_crop=self.auto_crop_var.get())
-            PreviewWindow(self.root, images, self.files, auto_crop=self.auto_crop_var.get())
-        except Exception as e:
-            messagebox.showerror("错误", f"预览失败: {e}")
+        self._show_processing("正在处理，请稍候...")
+
+        def progress_cb(current, total, msg):
+            self.root.after(0, lambda: self._update_progress(msg))
+
+        def worker():
+            try:
+                images = render_preview(self.files, dpi=150,
+                                        auto_crop=self.auto_crop_var.get(),
+                                        progress_callback=progress_cb)
+                self.root.after(0, lambda: self._preview_done(images))
+            except Exception as e:
+                self.root.after(0, lambda: self._preview_error(e))
+
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _preview_done(self, images):
+        self._hide_processing()
+        PreviewWindow(self.root, images, self.files, auto_crop=self.auto_crop_var.get())
+
+    def _preview_error(self, e):
+        self._hide_processing()
+        messagebox.showerror("错误", f"预览失败: {e}")
 
     def do_print(self):
         if not self._check_files():
@@ -214,11 +272,30 @@ class InvoiceApp:
         printer = _ask_printer(self.root)
         if printer is None:
             return
-        try:
-            print_direct(self.files, printer_name=printer, auto_crop=self.auto_crop_var.get())
-            messagebox.showinfo("提示", f"已发送到: {printer}")
-        except Exception as e:
-            messagebox.showerror("错误", f"打印失败: {e}")
+        self._show_processing("正在处理，请稍候...")
+
+        def progress_cb(current, total, msg):
+            self.root.after(0, lambda: self._update_progress(msg))
+
+        def worker():
+            try:
+                print_direct(self.files, printer_name=printer,
+                             auto_crop=self.auto_crop_var.get(),
+                             progress_callback=progress_cb)
+                self.root.after(0, lambda: self._print_done(printer))
+            except Exception as e:
+                self.root.after(0, lambda: self._print_error(e))
+
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _print_done(self, printer):
+        self._hide_processing()
+        messagebox.showinfo("提示", f"已发送到: {printer}")
+
+    def _print_error(self, e):
+        self._hide_processing()
+        messagebox.showerror("错误", f"打印失败: {e}")
 
 
 class PreviewWindow:
@@ -312,11 +389,45 @@ class PreviewWindow:
         printer = _ask_printer(self.win)
         if printer is None:
             return
-        try:
-            print_direct(self.files, printer_name=printer, auto_crop=self.auto_crop)
-            messagebox.showinfo("提示", f"已发送到: {printer}", parent=self.win)
-        except Exception as e:
-            messagebox.showerror("错误", f"打印失败: {e}", parent=self.win)
+        self.win.config(cursor="wait")
+        self._progress_win = tk.Toplevel(self.win)
+        self._progress_win.overrideredirect(True)
+        self._progress_win.attributes("-topmost", True)
+        x = self.win.winfo_x() + self.win.winfo_width() // 2 - 100
+        y = self.win.winfo_y() + self.win.winfo_height() // 2 - 30
+        self._progress_win.geometry(f"+{x}+{y}")
+        self._progress_label = tk.Label(self._progress_win, text="正在处理...",
+                                        font=("微软雅黑", 11), bg="#FFFFCC",
+                                        relief="solid", padx=20, pady=15)
+        self._progress_label.pack()
+        self._progress_win.update()
+
+        def progress_cb(current, total, msg):
+            self.win.after(0, lambda: self._progress_label.config(text=msg))
+            self.win.after(0, self._progress_win.update)
+
+        def worker():
+            try:
+                print_direct(self.files, printer_name=printer, auto_crop=self.auto_crop,
+                             progress_callback=progress_cb)
+                self.win.after(0, lambda: self._win_print_done(printer))
+            except Exception as e:
+                self.win.after(0, lambda: self._win_print_error(e))
+
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _win_print_done(self, printer):
+        self.win.config(cursor="")
+        if hasattr(self, '_progress_win'):
+            self._progress_win.destroy()
+        messagebox.showinfo("提示", f"已发送到: {printer}", parent=self.win)
+
+    def _win_print_error(self, e):
+        self.win.config(cursor="")
+        if hasattr(self, '_progress_win'):
+            self._progress_win.destroy()
+        messagebox.showerror("错误", f"打印失败: {e}", parent=self.win)
 
     def do_save(self):
         path = filedialog.asksaveasfilename(
@@ -325,13 +436,47 @@ class PreviewWindow:
         )
         if not path:
             return
-        try:
-            doc = build_merged_doc(self.files, auto_crop=self.auto_crop)
-            doc.save(path)
-            doc.close()
-            messagebox.showinfo("提示", f"已保存: {path}", parent=self.win)
-        except Exception as e:
-            messagebox.showerror("错误", f"保存失败: {e}", parent=self.win)
+        self.win.config(cursor="wait")
+        self._progress_win = tk.Toplevel(self.win)
+        self._progress_win.overrideredirect(True)
+        self._progress_win.attributes("-topmost", True)
+        x = self.win.winfo_x() + self.win.winfo_width() // 2 - 100
+        y = self.win.winfo_y() + self.win.winfo_height() // 2 - 30
+        self._progress_win.geometry(f"+{x}+{y}")
+        self._progress_label = tk.Label(self._progress_win, text="正在处理...",
+                                        font=("微软雅黑", 11), bg="#FFFFCC",
+                                        relief="solid", padx=20, pady=15)
+        self._progress_label.pack()
+        self._progress_win.update()
+
+        def progress_cb(current, total, msg):
+            self.win.after(0, lambda: self._progress_label.config(text=msg))
+            self.win.after(0, self._progress_win.update)
+
+        def worker():
+            try:
+                doc = build_merged_doc(self.files, auto_crop=self.auto_crop,
+                                       progress_callback=progress_cb)
+                doc.save(path)
+                doc.close()
+                self.win.after(0, lambda: self._win_save_done(path))
+            except Exception as e:
+                self.win.after(0, lambda: self._win_save_error(e))
+
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _win_save_done(self, path):
+        self.win.config(cursor="")
+        if hasattr(self, '_progress_win'):
+            self._progress_win.destroy()
+        messagebox.showinfo("提示", f"已保存: {path}", parent=self.win)
+
+    def _win_save_error(self, e):
+        self.win.config(cursor="")
+        if hasattr(self, '_progress_win'):
+            self._progress_win.destroy()
+        messagebox.showerror("错误", f"保存失败: {e}", parent=self.win)
 
 
 def _icon_path():
