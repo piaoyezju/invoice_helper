@@ -147,20 +147,19 @@ def build_merged_doc(files, auto_crop=False):
                 w, h = 0, 0
             items.append((path, effective_path, w, h))
 
-    # 按旋转后高度排序（高的在前）
-    items.sort(key=lambda x: x[3], reverse=True)
+    # 计算每个文件缩放到A4宽度后的渲染高度
+    for i, (path, eff_path, w, h) in enumerate(items):
+        rendered = (h * usable_w / w) if w > 0 and h > 0 else 0
+        items[i] = (path, eff_path, w, h, rendered)
+
+    # 按渲染高度降序排列（高的在前，高的2拼，矮的3拼）
+    items.sort(key=lambda x: x[4], reverse=True)
 
     doc = fitz.open()
     try:
         idx = 0
         while idx < len(items):
-            orig_path, eff_path, w, h = items[idx]
-            # 计算渲染高度
-            if w > 0 and h > 0:
-                scale = usable_w / w
-                rendered_h = h * scale
-            else:
-                rendered_h = threshold_h + 1
+            orig_path, eff_path, w, h, rendered_h = items[idx]
 
             if rendered_h > threshold_h:
                 count = 2
@@ -175,7 +174,7 @@ def build_merged_doc(files, auto_crop=False):
             for j in range(count):
                 if idx + j >= len(items):
                     break
-                orig_p, eff_p, _, _ = items[idx + j]
+                orig_p, eff_p = items[idx + j][0], items[idx + j][1]
                 if is_image(orig_p):
                     _add_image_to_section(page, eff_p, y, section_h)
                 elif is_pdf(orig_p):
