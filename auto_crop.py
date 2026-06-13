@@ -101,31 +101,33 @@ def _find_qr_code(gray, w, h):
     """用pyzbar找二维码，多种预处理方式增强检测。没找到返回None。"""
     try:
         from pyzbar.pyzbar import decode
-    except ImportError:
+    except Exception:
         return None
 
-    # 1. 原始灰度
-    codes = decode(Image.fromarray(gray))
-    if codes:
-        qr = codes[0]
-        return (qr.rect.left, qr.rect.top, qr.rect.width, qr.rect.height)
+    try:
+        # 1. 原始灰度
+        codes = decode(Image.fromarray(gray))
+        if codes:
+            qr = codes[0]
+            return (qr.rect.left, qr.rect.top, qr.rect.width, qr.rect.height)
 
-    # 2. 二值化
-    _, binary = cv2.threshold(gray, 128, 255, cv2.THRESH_BINARY)
-    codes = decode(Image.fromarray(binary))
-    if codes:
-        qr = codes[0]
-        return (qr.rect.left, qr.rect.top, qr.rect.width, qr.rect.height)
+        # 2. 二值化
+        _, binary = cv2.threshold(gray, 128, 255, cv2.THRESH_BINARY)
+        codes = decode(Image.fromarray(binary))
+        if codes:
+            qr = codes[0]
+            return (qr.rect.left, qr.rect.top, qr.rect.width, qr.rect.height)
 
-    # 3. 放大2倍（小QR码放大后更容易识别）
-    scale = 2
-    scaled = cv2.resize(gray, (w * scale, h * scale), interpolation=cv2.INTER_CUBIC)
-    codes = decode(Image.fromarray(scaled))
-    if codes:
-        qr = codes[0]
-        # 坐标缩回原图
-        return (qr.rect.left // scale, qr.rect.top // scale,
-                qr.rect.width // scale, qr.rect.height // scale)
+        # 3. 放大2倍（小QR码放大后更容易识别）
+        scale = 2
+        scaled = cv2.resize(gray, (w * scale, h * scale), interpolation=cv2.INTER_CUBIC)
+        codes = decode(Image.fromarray(scaled))
+        if codes:
+            qr = codes[0]
+            return (qr.rect.left // scale, qr.rect.top // scale,
+                    qr.rect.width // scale, qr.rect.height // scale)
+    except Exception:
+        return None
 
     return None
 
