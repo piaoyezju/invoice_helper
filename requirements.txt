@@ -2,5 +2,6 @@ PyMuPDF
 Pillow
 tkinterdnd2
 opencv-python-headless
+pyzbar
 pywin32; sys_platform == "win32"
 pyinstaller
